@@ -411,6 +411,7 @@
       var legalMoves = [];
       var previewBoard = null;
       var moveAnimating = false;
+      var illegalNotice = false;
       var motionToken = 0;
       var motionFrame = 0;
       var aiToken = 0;
@@ -429,15 +430,16 @@
       var transitionLocked = false;
 
       function cloneBoard(board) {
-        return board.map(function (row) { return row.map(function (p) { return p ? { side: p.side, king: p.king } : null; }); });
+        return board.map(function (row) { return row.map(function (p) { return p ? { side: p.side, king: p.king, id: p.id } : null; }); });
       }
       function initialBoard() {
         var b = Array.from({ length: 8 }, function () { return Array(8).fill(null); });
+        var nextId = 1;
         for (var c = 0; c < 8; c++) {
-          b[1][c] = { side: AI, king: false };
-          b[2][c] = { side: AI, king: false };
-          b[5][c] = { side: HUMAN, king: false };
-          b[6][c] = { side: HUMAN, king: false };
+          b[1][c] = { side: AI, king: false, id: nextId++ };
+          b[2][c] = { side: AI, king: false, id: nextId++ };
+          b[5][c] = { side: HUMAN, king: false, id: nextId++ };
+          b[6][c] = { side: HUMAN, king: false, id: nextId++ };
         }
         return b;
       }
@@ -447,6 +449,21 @@
       function coord(p) { return String.fromCharCode(97 + p[1]) + (8 - p[0]); }
       function aiName() {
         return settings.difficulty === "medium" ? "MED" : settings.difficulty.toUpperCase();
+      }
+      // Piece-oscillation ban (both players, simple moves only): if a piece's
+      // last three simple moves are A to B, B to A, A to B, the next simple
+      // move back to A is illegal. state.pieceTrail[id] holds the last four
+      // squares the piece has occupied through consecutive simple moves.
+      function isOscillationBanned(board, move) {
+        if (move.captures.length) return false;
+        var start = move.path[0], end = move.path[move.path.length - 1];
+        var piece = board[start[0]][start[1]];
+        if (!piece || piece.id == null || !state || !state.pieceTrail) return false;
+        var trail = state.pieceTrail[piece.id];
+        if (!trail || trail.length < 4) return false;
+        var t = trail.slice(-4);
+        return t[0] === t[2] && t[1] === t[3] && t[0] !== t[1] &&
+          keyOf(start[0], start[1]) === t[3] && keyOf(end[0], end[1]) === t[0];
       }
       function aiMoveKey(move) {
         return move.path.map(function (p) { return keyOf(p[0], p[1]); }).join(">") + "|" +
@@ -474,7 +491,7 @@
           if (target && target.side !== piece.side && !board[lr][lc]) {
             found = true;
             var next = cloneBoard(board);
-            next[r][c] = null; next[mr][mc] = null; next[lr][lc] = { side: piece.side, king: false };
+            next[r][c] = null; next[mr][mc] = null; next[lr][lc] = { side: piece.side, king: false, id: piece.id };
             manCaptures(next, lr, lc, piece, path.concat([[lr,lc]]), captures.concat([[mr,mc]]), d, out);
           }
         }
@@ -493,7 +510,7 @@
               if (enemy) {
                 found = true;
                 var next = cloneBoard(board);
-                next[r][c] = null; next[enemy[0]][enemy[1]] = null; next[rr][cc] = { side: piece.side, king: true };
+                next[r][c] = null; next[enemy[0]][enemy[1]] = null; next[rr][cc] = { side: piece.side, king: true, id: piece.id };
                 kingCaptures(next, rr, cc, piece, path.concat([[rr,cc]]), captures.concat([enemy]), d, out);
               }
               rr += d[0]; cc += d[1];
@@ -549,7 +566,7 @@
         next[start[0]][start[1]] = null;
         move.captures.forEach(function (p) { next[p[0]][p[1]] = null; });
         var promoted = !piece.king && ((piece.side === HUMAN && end[0] === 0) || (piece.side === AI && end[0] === 7));
-        next[end[0]][end[1]] = { side: piece.side, king: piece.king || promoted };
+        next[end[0]][end[1]] = { side: piece.side, king: piece.king || promoted, id: piece.id };
         return { board: next, promoted: promoted };
       }
 
@@ -684,10 +701,24 @@
       }
 
       function chooseAiMove(moves) {
+        function historyCount(move) {
+          return state.aiMoveHistory[aiMoveKey(move)] || 0;
+        }
+        function positionCount(move) {
+          var result = applyMoveTo(state.board, move);
+          return state.positions[boardKey(result.board, HUMAN)] || 0;
+        }
         var eligible = moves.filter(function (move) {
-          return (state.aiMoveHistory[aiMoveKey(move)] || 0) < 3;
+          return historyCount(move) < 3 && positionCount(move) < 2 && !isOscillationBanned(state.board, move);
         });
-        if (!eligible.length) return null;
+        if (!eligible.length) {
+          var fallback = moves.slice().sort(function (a, b) {
+            var hd = historyCount(a) - historyCount(b);
+            if (hd !== 0) return hd;
+            return positionCount(a) - positionCount(b);
+          });
+          return fallback[0];
+        }
         var candidates = sensibleCandidates(eligible);
         var pieces = pieceCount(state.board, AI) + pieceCount(state.board, HUMAN);
         if (settings.difficulty === "easy") {
@@ -720,7 +751,7 @@
           if (i > 1) next[previous[0]][previous[1]] = null;
           if (move.captures[i - 1]) next[move.captures[i - 1][0]][move.captures[i - 1][1]] = null;
           var promoted = !piece.king && i === move.path.length - 1 && ((piece.side === HUMAN && landing[0] === 0) || (piece.side === AI && landing[0] === 7));
-          next[landing[0]][landing[1]] = { side: piece.side, king: piece.king || promoted };
+          next[landing[0]][landing[1]] = { side: piece.side, king: piece.king || promoted, id: piece.id };
         }
         return next;
       }
@@ -810,6 +841,25 @@
           var historyKey = aiMoveKey(move);
           state.aiMoveHistory[historyKey] = (state.aiMoveHistory[historyKey] || 0) + 1;
         }
+        // Track the moving piece's trail of squares for the oscillation ban.
+        // A capture breaks the piece's simple-move chain and ends the trails
+        // of any pieces it took; a simple move extends the chain.
+        var startSq = move.path[0], endSq = move.path[move.path.length - 1];
+        var movingPiece = state.board[startSq[0]][startSq[1]];
+        if (movingPiece && movingPiece.id != null) {
+          if (move.captures.length) {
+            move.captures.forEach(function (p) {
+              var taken = state.board[p[0]][p[1]];
+              if (taken && taken.id != null) delete state.pieceTrail[taken.id];
+            });
+            state.pieceTrail[movingPiece.id] = [keyOf(endSq[0], endSq[1])];
+          } else {
+            var trail = state.pieceTrail[movingPiece.id] || [keyOf(startSq[0], startSq[1])];
+            trail.push(keyOf(endSq[0], endSq[1]));
+            state.pieceTrail[movingPiece.id] = trail.slice(-4);
+          }
+        }
+        illegalNotice = false;
         state.board = result.board;
         state.log.unshift(moveText(move, result.promoted));
         state.moveNo++;
@@ -823,9 +873,6 @@
         if (terminal) { render(); return; }
         var posKey = boardKey(state.board, state.turn);
         state.positions[posKey] = (state.positions[posKey] || 0) + 1;
-        if (state.positions[posKey] >= 3) {
-          endGame("draw", "Position repeated 3 times"); render(); return;
-        }
         if (pieceCount(state.board, HUMAN) === 1 && pieceCount(state.board, AI) === 1) {
           endGame("draw", "One piece each"); render(); return;
         }
@@ -909,7 +956,6 @@
           var moves = allLegalMoves(state.board, AI);
           if (!moves.length) { checkTerminal(); render(); return; }
           var move = chooseAiMove(moves);
-          if (!move) { endGame("draw", "AI repetition limit reached"); render(); return; }
           doMove(move, true);
         }, settings.difficulty === "hard" ? 560 : 380);
       }
@@ -952,6 +998,7 @@
 
         if (!selectedPath) {
           if (tappedPiece && tappedPiece.side === HUMAN) {
+            illegalNotice = false;
             selectedPath = [[r,c]];
             candidateMoves = legalMoves.filter(function (m) { return m.path[0][0] === r && m.path[0][1] === c; });
             previewBoard = null;
@@ -962,12 +1009,14 @@
 
         var current = selectedPath[selectedPath.length - 1];
         if (current[0] === r && current[1] === c) {
+          illegalNotice = false;
           clearSelection();
           renderBoard();
           return;
         }
 
         if (tappedPiece && tappedPiece.side === HUMAN) {
+          illegalNotice = false;
           selectedPath = [[r,c]];
           candidateMoves = legalMoves.filter(function (m) { return m.path[0][0] === r && m.path[0][1] === c; });
           previewBoard = null;
@@ -978,12 +1027,23 @@
         var depth = selectedPath.length;
         var next = candidateMoves.filter(function (m) { return m.path.length > depth && m.path[depth][0] === r && m.path[depth][1] === c; });
         if (!next.length) {
+          illegalNotice = false;
           clearSelection();
           renderBoard();
           return;
         }
 
-        animateHumanStep(next, [r,c]);
+        var allowed = next.filter(function (m) { return !isOscillationBanned(state.board, m); });
+        if (!allowed.length) {
+          // Banned by the oscillation rule: refuse the move, leave the board
+          // and the selection untouched, keep the turn, and say so.
+          illegalNotice = true;
+          render();
+          return;
+        }
+
+        illegalNotice = false;
+        animateHumanStep(allowed, [r,c]);
       }
 
       function renderBoard() {
@@ -1027,7 +1087,7 @@
         renderBoard();
         var must = legalMoves.length && legalMoves[0].captures.length;
         if (state.status === "ended") statusEl.textContent = state.winner === "draw" ? "No score. Play again." : (state.winner === "human" ? "You win" : aiName() + " wins");
-        else if (state.turn === HUMAN) statusEl.textContent = must ? (legalMoves[0].captures.length > 1 ? "Take the most pieces" : "You must take a piece") : "Your turn";
+        else if (state.turn === HUMAN) statusEl.textContent = illegalNotice ? "ILLEGAL MOVE" : (must ? (legalMoves[0].captures.length > 1 ? "Take the most pieces" : "You must take a piece") : "Your turn");
         else statusEl.textContent = aiName() + " is thinking";
         $("humanChip").classList.toggle("turn", state.turn === HUMAN && state.status === "playing");
         $("aiChip").classList.toggle("turn", state.turn === AI && state.status === "playing");
@@ -1040,7 +1100,8 @@
         cancelMotion();
         aiToken++;
         $("resultModal").classList.remove("open");
-        state = { board: initialBoard(), turn: HUMAN, status: "playing", winner: null, moveNo: 1, log: [], positions: {}, aiMoveHistory: Object.create(null) };
+        state = { board: initialBoard(), turn: HUMAN, status: "playing", winner: null, moveNo: 1, log: [], positions: {}, aiMoveHistory: Object.create(null), pieceTrail: {} };
+        illegalNotice = false;
         state.positions[boardKey(state.board, state.turn)] = 1;
         selectedPath = null; candidateMoves = []; previewBoard = null; moveAnimating = false;
         resetTimer();
