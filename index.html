@@ -510,7 +510,7 @@
       function mpSideColor(side) { return side === 1 ? "black" : "white"; }
       function mpShareLink() { return window.location.origin + window.location.pathname + "?room=" + encodeURIComponent(mp.roomCode); }
       function mpSetLobbyStatus(text) { var el = $("mpStatus"); if (el) el.textContent = text || ""; }
-      function mpSetLink() { var el = $("mpLink"); if (el && mp.roomCode) el.value = mpShareLink(); }
+      function mpSetLink() { var el = $("mpLink"); if (el && mp.roomCode) { var link = mpShareLink(); if (el.value !== link) { el.value = link; var btn = $("mpCopy"); if (btn) btn.textContent = "Copy"; } } }
       function mpShowLobby() {
         $("identityScreen").classList.add("hidden");
         $("setupScreen").classList.add("hidden");
@@ -1945,10 +1945,10 @@
         var link = $("mpLink").value || "";
         if (!link) return;
         if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(link).then(function () { mpSetLobbyStatus("Link copied."); }).catch(function () {});
+          navigator.clipboard.writeText(link).then(function () { $("mpCopy").textContent = "COPIED"; mpSetLobbyStatus("Link copied."); }).catch(function () {});
         } else {
           $("mpLink").select();
-          try { document.execCommand("copy"); mpSetLobbyStatus("Link copied."); } catch (e) {}
+          try { document.execCommand("copy"); $("mpCopy").textContent = "COPIED"; mpSetLobbyStatus("Link copied."); } catch (e) {}
         }
       });
       Array.prototype.forEach.call(document.querySelectorAll(".mp-color-btn"), function (button) {
